@@ -1,3 +1,0 @@
-/home/yjh/ld_RK100/ros2_humble_ws/iLQR/src/build/CMakeFiles/rebuild_cache.dir
-/home/yjh/ld_RK100/ros2_humble_ws/iLQR/src/build/CMakeFiles/edit_cache.dir
-/home/yjh/ld_RK100/ros2_humble_ws/iLQR/src/build/CMakeFiles/iLQR.dir
