@@ -44,6 +44,7 @@ public:
         }
         theta.push_back(0.0);  // 最后一个点的theta设置为0
         v.assign(cx.size(), 3.0);  // 设置所有点的目标速度为3 m/s
+        //assign：先清空向量 v 原有的所有内容，然后将 v 的大小重新调整为 cx.size()，最后把这 cx.size() 个格子全部填充为双精度浮点数 3.0
     }
  
     // 获取指定索引处的参考状态向量[x, y, theta, v]
@@ -60,16 +61,16 @@ public:
     int N;             // 控制步数
     int max_iter;      // 最大迭代次数
     double dt;         // 时间步长
-    MatrixXd Q, R, Qf; // 代价函数的权重矩阵
+    MatrixXd Q, R, Qf; // 代价函数的权重矩阵，Q和R是stage cost，Qf是terminal cost
  
-    // 控制器构造函数
+    // iLQR控制器构造函数
     iLQRController(int N_input = 50, int max_iter_input = 10, double dt_input = 0.1)
         : N(N_input), max_iter(max_iter_input), dt(dt_input) {
         // 初始化状态代价矩阵Q，控制代价矩阵R，终端状态代价矩阵Qf
-        Q = MatrixXd::Zero(4, 4);
-        Q(0, 0) = 1.0; Q(1, 1) = 1.0; Q(2, 2) = 0.5; Q(3, 3) = 0.1;
-        R = MatrixXd::Identity(2, 2) * 0.1;
-        Qf = Q * 10.0;
+        Q = MatrixXd::Zero(4, 4);//这里状态量有四个，分别是x,y,theta,v，所以这里的Q矩阵大小是4*4
+        Q(0, 0) = 1.0; Q(1, 1) = 1.0; Q(2, 2) = 0.5; Q(3, 3) = 0.1;//
+        R = MatrixXd::Identity(2, 2) * 0.1;//这里控制量有两个，分别是a,omega，所以这里的R矩阵大小是2*2
+        Qf = Q * 10.0;//终端状态代价矩阵Qf是Q的10倍
     }
  
     // iLQR算法的实现，返回当前时刻的最优控制输入
@@ -90,17 +91,17 @@ public:
             }
  
             // 反向传播，更新控制增量和反馈矩阵
-            VectorXd Vx = Qf * (xs[N] - trajectory.get_reference(index + N));
-            MatrixXd Vxx = Qf;
+            VectorXd Vx = Qf * (xs[N] - trajectory.get_reference(index + N));// 终端状态的价值函数梯度，是Qf*(xN-x_refN)
+            MatrixXd Vxx = Qf;                                               // 终端状态的价值函数Hessian矩阵
  
-            std::vector<VectorXd> k_control_list(N, VectorXd::Zero(u_dim));  // 控制增量
+            std::vector<VectorXd> k_control_list(N, VectorXd::Zero(u_dim));          // 控制增量
             std::vector<MatrixXd> K_feedback_list(N, MatrixXd::Zero(u_dim, x_dim));  // 反馈矩阵
  
             for (int i = N - 1; i >= 0; --i) {
                 VectorXd x_ref = trajectory.get_reference(index + i);
                 std::pair<MatrixXd, MatrixXd> linearized = linearize_dynamics(xs[i], us[i], dt);
-                MatrixXd fx = linearized.first;
-                MatrixXd fu = linearized.second;
+                MatrixXd fx = linearized.first;   // 线性化动力学模型的状态矩阵，雅可比矩阵
+                MatrixXd fu = linearized.second;  // 线性化动力学模型的控制矩阵，雅可比矩阵
  
                 // 计算代价梯度和Hessian矩阵
                 VectorXd lx = Q * (xs[i] - x_ref);
@@ -173,7 +174,7 @@ public:
         fu(2, 1) = dt;
         fu(3, 0) = dt;
  
-        return {fx, fu};
+        return {fx, fu};// 返回线性化+离散化（前向欧拉离散）的状态矩阵和控制矩阵，雅可比矩阵
     }
  
     // 计算总成本
