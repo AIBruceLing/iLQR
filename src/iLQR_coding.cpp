@@ -69,7 +69,7 @@ class iLQRController{
         }
 
 
-        VectorXd iLQR(VehicleModel& vehicle, const Trajectory& trajectory, size_t index){
+        VectorXd iLQR(VehicleModel& vehicle, const Trajectory& trajectory, size_t index){ 
             const size_t state_dim = 4;
             const size_t control_dim = 2;
             std::vector<VectorXd> state_sequence(N + 1, VectorXd::Zero(state_dim));
@@ -77,36 +77,46 @@ class iLQRController{
 
             //车辆初始状态
             state_sequence[0] << vehicle.x_, vehicle.y_, vehicle.theta_, vehicle.v_;
+            double pre_cost = 0.0;
 
             //迭代更新控制输入和状态
             for(size_t iter = 0; iter < max_iter; iter++){
-                // 前向传播，rollout
+                // 前向传播，rollout，得到标称轨迹state_sequence（Nominal Trajectory）
                 for(int i = 0; i < N; i++){
                     state_sequence[i + 1] = dynamics(state_sequence[i],control_sequence[i], dt);
                 }
 
                 // 反向传播，backward
-                VectorXd Vx = Qf * (state_sequence[N] - trajectory.get_reference(index + N));
-                MatrixXd Vxx = Qf;
+                /*
+                (状态)值函数是state Value，只和状态值有关
+                这里是反向传播（Backward Pass）起点时的初始化计算
 
-                std::vector<VectorXd> k_control_list(N, VectorXd::Zero(control_dim));
-                std::vector<MatrixXd> k_feedback_list(N, MatrixXd::Zero(control_dim, state_dim));
-                
+                因为最后一步没有控制量了，所以最后一步(终端)的值函数等于代价函数
+                终端代价函数（Terminal Cost）的一阶导数（梯度）和二阶导数（海森矩阵/曲率）
+                */
+                VectorXd Vx = Qf * (state_sequence[N] - trajectory.get_reference(index + N)); // 终端值函数的梯度 = Qf * dx
+                MatrixXd Vxx = Qf;                                                            // 终端值函数的曲率 = 终端状态权重矩阵
+
+                // 初始化前馈向量数组和反馈矩阵数组
+                std::vector<VectorXd> k_control_list(N, VectorXd::Zero(control_dim));               
+                std::vector<MatrixXd> k_feedback_list(N, MatrixXd::Zero(control_dim, state_dim));    
+                 
+                //得到每一个时间步的前馈向量d_k和反馈矩阵K_k，并更新价值函数梯度Vx和Vxx
                 for(int i = N - 1; i >= 0; i--){
                     VectorXd state_ref = trajectory.get_reference(index + i);
                     std::pair<MatrixXd,MatrixXd> linearized = linearize_dynamics(state_sequence[i],
-                                                                        control_sequence[i], dt);
+                                                                                 control_sequence[i], dt);
                     MatrixXd A = linearized.first;
                     MatrixXd B = linearized.second;
 
-                    //计算代价梯度和hessian矩阵
+                    //计算二次型代价梯度和hessian矩阵
                     VectorXd lx = Q * (state_sequence[i] - state_ref);
-                    VectorXd lu = R * control_sequence[i];
-                    MatrixXd lxx = Q;
+                    VectorXd lu = R * control_sequence[i];                // 这里的参考轨迹中的参考控制量为0，所以du[i] = control_sequence[i]
+                    MatrixXd lxx = Q; 
                     MatrixXd luu = R;
-                    MatrixXd lux = MatrixXd::Zero(control_dim,state_dim);
+                    MatrixXd lux = MatrixXd::Zero(control_dim,state_dim); // 先对 x 求偏导再对 u 求偏导，结果为0
 
-                    //计算Q函数的二次近似
+                    //计算Q函数(action value)的二阶泰勒展开系数——5个偏导：
                     VectorXd Qx = lx + A.transpose()*Vx;
                     VectorXd Qu = lu + B.transpose()*Vx;
                     MatrixXd Qxx = lxx + A.transpose()*Vxx*A;
@@ -114,24 +124,28 @@ class iLQRController{
                     MatrixXd Qux = lux + B.transpose()*Vxx*A;
 
                     //计算控制增量和反馈矩阵
+                    // 最优控制增量：du = -(d_k + K_k * dx)
                     MatrixXd Quu_inv = Quu.inverse();
-                    VectorXd k_control = -Quu_inv*Qu;
-                    MatrixXd K_feedback = -Quu_inv*Qux;
+                    VectorXd k_control = -Quu_inv*Qu;     // 前馈向量  d_k = -Quu?? Qu
+                    MatrixXd K_feedback = -Quu_inv*Qux;   // 反馈矩阵  K_k = -Quu?? Qux
+
+                                           
+                    k_control_list[i] = k_control;
+                    k_feedback_list[i] = K_feedback;
 
                     //更新价值函数
                     Vx = Qx + K_feedback.transpose()*Quu*k_control + 
                          K_feedback.transpose()*Qu+Qux.transpose()*k_control;
                     Vxx = Qxx + K_feedback.transpose() * Quu * K_feedback + 
                          K_feedback.transpose() * Qux + Qux.transpose() * K_feedback;
-                    k_control_list[i] = k_control;
-                    k_feedback_list[i] = K_feedback;
                 }
 
-                //更新控制序列并进行前向rollout模拟
+
+                //基于上一步得到的反馈和前馈更新每个时间步(轨迹步)的控制序列，并进行前向rollout模拟
                 std::vector<VectorXd> state_sequence_new(N + 1, state_sequence[0]);
                 std::vector<VectorXd> control_sequence_new;
-
                 for(int i = 0; i < N; i++){
+                    // 最优控制增量：du = -(d_k + K_k * dx)
                     VectorXd du = k_control_list[i] + k_feedback_list[i]*(state_sequence_new[i] - state_sequence[i]);
                     control_sequence_new.push_back(control_sequence[i] + du);
                     state_sequence_new[i+1] = dynamics(state_sequence_new[i], control_sequence_new.back(),dt);
@@ -140,12 +154,15 @@ class iLQRController{
                 control_sequence = control_sequence_new;
 
                 //判断是否收敛
-                double cost = compute_total_cost(state_sequence,control_sequence,trajectory,index);
-                std::cout<<"Iteration "<< iter << ",cost:" << cost << std::endl;
-                if(cost < 1e-6 ){
+                double cur_cost = compute_total_cost(state_sequence,control_sequence,trajectory,index);
+                double cost_error = std::fabs(cur_cost - pre_cost);
+                std::cout<<"Iteration "<< iter << ",cost_error:" << cost_error << std::endl;
+                if(cost_error < 1e-6 ){
                     break;
                 }
+                pre_cost = cur_cost;
             }
+            std::cout<<"The best control: a is "<<control_sequence[0][0]<<", angle is "<<control_sequence[0][1]<<std::endl;
 
             return control_sequence[0];//返回控制序列的第一个控制量
         }
@@ -162,7 +179,7 @@ class iLQRController{
         }
 
         
-        //对非线性运动学模型进行线性化
+        //对非线性运动学模型进行线性化，得到线性误差状态空间方程
         /*
         状态雅可比矩阵： A = [1 0 -v*sin(theta) cos(theta)
                            0 1  v*cos(theta) sin(theta)
